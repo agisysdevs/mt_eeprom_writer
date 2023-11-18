@@ -6,6 +6,7 @@
 #include "driver/i2c.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "driver/gpio.h"
 
 #define UART_NUM UART_NUM_0
 #define TXD_PIN (GPIO_NUM_1)
@@ -17,6 +18,8 @@
 #define EEPROM_START_ADDR 0x200
 #define MAX_TEXT_LENGTH 256
 #define MIN_TEXT_LENGTH 100
+#define MAIN_PROCESSOR_RESET_PIN (GPIO_NUM_13)
+#define STATUS_LED (GPIO_NUM_16)
 
 // static const char *TAG = "EEPROM_UART";
 
@@ -104,40 +107,62 @@ esp_err_t read_from_eeprom(char *buffer)
     return ESP_OK;
 }
 
-void app_main()
-{
+void uart_task(void *pvParameters) {
     char buffer[MAX_TEXT_LENGTH + 1]; // +1 for null-terminator
     char aux[MAX_TEXT_LENGTH + 1];    // to compare read/write results
     char ans[MAX_TEXT_LENGTH + 5];    // to send back the written result
-    init_uart();
-    init_i2c();
+    int index = 0;
 
-    while (1)
-    {
-        int len = uart_read_bytes(UART_NUM, (uint8_t *)buffer, sizeof(buffer), 1000 / portTICK_PERIOD_MS);
-        if (len > 0)
-        {
-            buffer[len] = '\0'; // Null-terminate the received string
-            memcpy(aux, buffer, sizeof(buffer)); // clone the buffer to compare later
-            esp_err_t write_result = write_to_eeprom(buffer);
-            if (write_result == ESP_OK)
-            {
-                memset(buffer, 0, sizeof(buffer)); // Clear buffer before reading
-                esp_err_t read_result = read_from_eeprom(buffer);
-                if (read_result == ESP_OK && strcmp(buffer, aux) == 0)
-                {
-                    sprintf(ans, "OK: %s", buffer);
-                    uart_write_bytes(UART_NUM, ans, sizeof(ans)); // memory written correctly
+    while (1) {
+        uint8_t data[1];
+        int len = uart_read_bytes(UART_NUM, data, 1, 10 / portTICK_PERIOD_MS);
+
+        if (len > 0) {
+            if (data[0] == '\r') {
+                // CR received, process the received data
+                buffer[index] = '\0'; // Null-terminate the string
+                memcpy(aux, buffer, sizeof(buffer)); // clone the buffer to compare later
+
+                if (index >= MIN_TEXT_LENGTH) {
+                    esp_err_t write_result = write_to_eeprom(buffer);
+
+                    if (write_result == ESP_OK) {
+                        if (strcmp(buffer, aux) == 0)
+                        {
+                            sprintf(ans, "OK: %s", buffer); // OK
+                            uart_write_bytes(UART_NUM, ans, sizeof(ans));    
+                        }
+                        else {
+                            sprintf(ans, "E3: %s", buffer); // E3: written / read values do not match
+                            uart_write_bytes(UART_NUM, ans, sizeof(ans));    
+                        }
+                    } else {
+                        uart_write_bytes(UART_NUM, "E2", 2); // E2: read memory error    
+                    }
+                } else {
+                    sprintf(ans, "E1: %s", buffer); // E1: buffer too short
+                    uart_write_bytes(UART_NUM, ans, sizeof(ans));    
                 }
-                else
-                {
-                    uart_write_bytes(UART_NUM, "E1", 2); // failed to read or data corrupted
+
+                // Reset buffer index
+                index = 0;
+            } else {
+                // Add the received character to the buffer
+                if (index < MAX_TEXT_LENGTH) {
+                    buffer[index++] = data[0];
+                } else {
+                    sprintf(ans, "E0: %s", buffer); // E0: buffer overflow
+                    uart_write_bytes(UART_NUM, ans, sizeof(ans));    
+                    index = 0;
                 }
-            }
-            else
-            {
-                uart_write_bytes(UART_NUM, "E0", 2); // failed to write or memory not present
             }
         }
     }
+}
+
+void app_main() {
+    init_uart();
+    init_i2c();
+
+    xTaskCreate(uart_task, "uart_task", 4096, NULL, 10, NULL);
 }
