@@ -107,52 +107,68 @@ esp_err_t read_from_eeprom(char *buffer)
     return ESP_OK;
 }
 
-void uart_task(void *pvParameters) {
+void uart_task(void *pvParameters)
+{
     char buffer[MAX_TEXT_LENGTH + 1]; // +1 for null-terminator
     char aux[MAX_TEXT_LENGTH + 1];    // to compare read/write results
-    char ans[MAX_TEXT_LENGTH + 5];    // to send back the written result
+    char ans[MAX_TEXT_LENGTH + 10];   // to send back the written result
     int index = 0;
 
-    while (1) {
+    while (1)
+    {
         uint8_t data[1];
         int len = uart_read_bytes(UART_NUM, data, 1, 10 / portTICK_PERIOD_MS);
 
-        if (len > 0) {
-            if (data[0] == '\r') {
+        if (len > 0)
+        {
+            if (data[0] == '\r')
+            {
                 // CR received, process the received data
-                buffer[index] = '\0'; // Null-terminate the string
+                buffer[index] = '\0';                // Null-terminate the string
                 memcpy(aux, buffer, sizeof(buffer)); // clone the buffer to compare later
 
-                if (index >= MIN_TEXT_LENGTH) {
+                if (index >= MIN_TEXT_LENGTH)
+                {
                     esp_err_t write_result = write_to_eeprom(buffer);
 
-                    if (write_result == ESP_OK) {
+                    if (write_result == ESP_OK)
+                    {
                         if (strcmp(buffer, aux) == 0)
                         {
-                            sprintf(ans, "OK: %s", buffer); // OK
-                            uart_write_bytes(UART_NUM, ans, sizeof(ans));    
+                            sprintf(ans, "OK: %s\n", buffer); // OK
+                            uart_write_bytes(UART_NUM, ans, index + 5);
                         }
-                        else {
-                            sprintf(ans, "E3: %s", buffer); // E3: written / read values do not match
-                            uart_write_bytes(UART_NUM, ans, sizeof(ans));    
+                        else
+                        {
+                            sprintf(ans, "E3: %s\n", buffer); // E3: written / read values do not match
+                            uart_write_bytes(UART_NUM, ans, index + 5);
                         }
-                    } else {
-                        uart_write_bytes(UART_NUM, "E2", 2); // E2: read memory error    
                     }
-                } else {
-                    sprintf(ans, "E1: %s", buffer); // E1: buffer too short
-                    uart_write_bytes(UART_NUM, ans, sizeof(ans));    
+                    else
+                    {
+                        uart_write_bytes(UART_NUM, "E2\n", 3); // E2: read memory error
+                    }
+                }
+                else
+                {
+                    sprintf(ans, "E1: %s\n", buffer); // E1: buffer too short
+                    uart_write_bytes(UART_NUM, ans, index + 5);
                 }
 
                 // Reset buffer index
                 index = 0;
-            } else {
+            }
+            else
+            {
                 // Add the received character to the buffer
-                if (index < MAX_TEXT_LENGTH) {
+                if (index < MAX_TEXT_LENGTH)
+                {
                     buffer[index++] = data[0];
-                } else {
-                    sprintf(ans, "E0: %s", buffer); // E0: buffer overflow
-                    uart_write_bytes(UART_NUM, ans, sizeof(ans));    
+                }
+                else
+                {
+                    sprintf(ans, "E0: %s\n", buffer); // E0: buffer overflow
+                    uart_write_bytes(UART_NUM, ans, index + 5);
                     index = 0;
                 }
             }
@@ -160,7 +176,8 @@ void uart_task(void *pvParameters) {
     }
 }
 
-void app_main() {
+void app_main()
+{
     init_uart();
     init_i2c();
 
