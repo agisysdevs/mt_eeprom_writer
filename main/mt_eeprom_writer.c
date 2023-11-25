@@ -237,7 +237,7 @@ void uart_task(void *pvParameters)
                 else if (memcmp(buffer, "ff", 2) == 0)
                 {
                     fill_mem(0xFF);
-                    uart_write_bytes(UART_NUM, "ME OK\n", 6); // Memory erase OK
+                    uart_write_bytes(UART_NUM, "ME OK\r\n", 7); // Memory erase OK
                 }
                 else if (memcmp(buffer, "mp", 2) == 0)
                 {
@@ -249,7 +249,7 @@ void uart_task(void *pvParameters)
                 }
                 else if (memcmp(buffer, "vv", 2) == 0)
                 {
-                    sprintf(ans, "V: %s D: %s\n", SOFTWARE_VERSION, SOFTWARE_DATE);
+                    sprintf(ans, "V: %s D: %s\r\n", SOFTWARE_VERSION, SOFTWARE_DATE);
                     uart_write_bytes(UART_NUM, ans, strlen(ans)); // print version and date
                 }
                 else
@@ -288,43 +288,43 @@ void uart_task(void *pvParameters)
                                     {
                                         if (strcmp(aux2, aux1) == 0)
                                         {
-                                            sprintf(ans, "OK: %s\n", aux2); // OK
+                                            sprintf(ans, "OK: %s\r\n", aux2); // OK
                                             uart_write_bytes(UART_NUM, ans, strlen(ans));
                                         }
                                         else
                                         {
-                                            sprintf(ans, "E6: %s\n", aux2); // E6: written / read values do not match
+                                            sprintf(ans, "E6: %s\r\n", aux2); // E6: written / read values do not match
                                             uart_write_bytes(UART_NUM, ans, strlen(ans));
                                         }
                                     }
                                     else
                                     {
-                                        sprintf(ans, "E5: %02d - %s\n", second_read_result, aux2); // E5: re-read memory error
+                                        sprintf(ans, "E5: %02d - %s\r\n", second_read_result, aux2); // E5: re-read memory error
                                         uart_write_bytes(UART_NUM, ans, strlen(ans));
                                     }
                                 }
                                 else
                                 {
-                                    sprintf(ans, "E4: %02d\n", write_result); // E4: write memory error
+                                    sprintf(ans, "E4: %02d\r\n", write_result); // E4: write memory error
                                     uart_write_bytes(UART_NUM, ans, strlen(ans));
                                 }
                             }
                             else
                             {
                                 aux0[index] = '\0';             // terminate aux0 no matter what just in case i am writing a string smaller than the one recorded
-                                sprintf(ans, "E3: %s\n", aux0); // E3: memory not empty
+                                sprintf(ans, "E3: %s\r\n", aux0); // E3: memory not empty
                                 uart_write_bytes(UART_NUM, ans, strlen(ans));
                             }
                         }
                         else
                         {
-                            sprintf(ans, "E2: %02d\n", read_result); // E2: read memory error
+                            sprintf(ans, "E2: %02d\r\n", read_result); // E2: read memory error
                             uart_write_bytes(UART_NUM, ans, strlen(ans));
                         }
                     }
                     else
                     {
-                        sprintf(ans, "E1: %s\n", buffer); // E1: buffer too short
+                        sprintf(ans, "E1: %s\r\n", buffer); // E1: buffer too short
                         uart_write_bytes(UART_NUM, ans, strlen(ans));
                     }
                 }
