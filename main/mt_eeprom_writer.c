@@ -22,9 +22,34 @@
 #define MIN_TEXT_LENGTH 100
 #define MAIN_PROCESSOR_RESET_PIN (GPIO_NUM_13)
 #define STATUS_LED (GPIO_NUM_16)
+#define POWER_MOSFET (GPIO_NUM_17)
+#define LED_RED (GPIO_NUM_26)
+#define LED_GREEN (GPIO_NUM_33)
+#define LED_BLUE (GPIO_NUM_25)
 
-#define SOFTWARE_VERSION    "0.1"
-#define SOFTWARE_DATE       "20231124"
+#define BLINK_FAST 250  // 250 mseg
+#define BLINK_SLOW 1000 // 1 seg
+#define COLOR_RED BIT0
+#define COLOR_GREEN BIT1
+#define COLOR_BLUE BIT2
+#define COLOR_YELLOW COLOR_GREEN | COLOR_RED
+#define COLOR_MAGENTA COLOR_RED | COLOR_BLUE
+#define COLOR_CYAN COLOR_GREEN | COLOR_BLUE
+#define COLOR_WHITE COLOR_RED | COLOR_GREEN | COLOR_BLUE
+
+#define SOFTWARE_VERSION "0.2"
+#define SOFTWARE_DATE "20231127"
+
+uint8_t color = 0;
+bool blink = false;
+bool blink_slow = false;
+bool board_on = false;
+bool err_state = false;
+
+void led_set_in_progress(void);
+void led_set_safe_to_remove(void);
+void led_set_power_on(void);
+void led_set_off(void);
 
 void init_uart()
 {
@@ -48,6 +73,19 @@ void init_i2c()
         .master.clk_speed = 100000};
     i2c_param_config(I2C_MASTER_NUM, &conf);
     i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0);
+}
+
+void reset_target(void)
+{
+    gpio_set_direction(MAIN_PROCESSOR_RESET_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_level(MAIN_PROCESSOR_RESET_PIN, 0);
+}
+
+void release_target(void)
+{
+    gpio_set_level(MAIN_PROCESSOR_RESET_PIN, 1);
+    gpio_set_direction(MAIN_PROCESSOR_RESET_PIN, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(MAIN_PROCESSOR_RESET_PIN, GPIO_PULLUP_ONLY);
 }
 
 esp_err_t eeprom_write(uint8_t deviceaddress, uint16_t eeaddress, uint8_t *data, uint16_t size)
@@ -148,14 +186,25 @@ void fill_mem(uint8_t value)
 {
     uint8_t buffer[EEPROM_SIZE];
     memset(buffer, value, EEPROM_SIZE);
+    reset_target();
+    gpio_set_level(STATUS_LED, 1);
+    vTaskDelay(250 / portTICK_PERIOD_MS);
     eeprom_write(EEPROM_ADDR, 0x00, buffer, EEPROM_SIZE);
+    vTaskDelay(250 / portTICK_PERIOD_MS);
+    release_target();
+    gpio_set_level(STATUS_LED, 0);
 }
 
 void read_mem(void)
 {
     char memdump[EEPROM_SIZE], mdp[30];
-    // read_from_eeprom((uint8_t *)memdump, 0x00, 0xFF);
+    reset_target();
+    gpio_set_level(STATUS_LED, 1);
+    vTaskDelay(500 / portTICK_PERIOD_MS);
     eeprom_read(EEPROM_ADDR, 0x00, (uint8_t *)memdump, EEPROM_SIZE);
+    vTaskDelay(250 / portTICK_PERIOD_MS);
+    release_target();
+    gpio_set_level(STATUS_LED, 0);
     for (uint16_t i = 0; i < EEPROM_SIZE; i++)
     {
         if (i % 16 == 0)
@@ -172,6 +221,9 @@ void detect_devices(void)
     char aux[20];
     uart_write_bytes(UART_NUM, "       0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n", 54);
     uart_write_bytes(UART_NUM, "0000:         ", 14);
+    reset_target();
+    gpio_set_level(STATUS_LED, 1);
+    vTaskDelay(10 / portTICK_PERIOD_MS);
     for (uint8_t i = 3; i < 0x78; i++)
     {
         i2c_cmd_handle_t cmd = i2c_cmd_link_create();
@@ -183,17 +235,20 @@ void detect_devices(void)
         if (i % 16 == 0)
         {
             sprintf(aux, "\n%.4x:", i);
-            uart_write_bytes(UART_NUM, aux, 6);
+            uart_write_bytes(UART_NUM, aux, strlen(aux));
         }
         if (res == 0)
         {
             sprintf(aux, " %.2x", i);
-            uart_write_bytes(UART_NUM, aux, 3);
+            uart_write_bytes(UART_NUM, aux, strlen(aux));
         }
         else
             uart_write_bytes(UART_NUM, " --", 3);
         i2c_cmd_link_delete(cmd);
     }
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+    release_target();
+    gpio_set_level(STATUS_LED, 0);
     uart_write_bytes(UART_NUM, "\n", 1);
 }
 
@@ -215,125 +270,148 @@ void uart_task(void *pvParameters)
 
         if (len > 0)
         {
-            if (data[0] == '\r')
+            if (data[0] == '\r' || data[0] == '\n')
             {
-
-                vTaskDelay(250 / portTICK_PERIOD_MS);
-                gpio_set_level(MAIN_PROCESSOR_RESET_PIN, 1);
-                gpio_set_level(STATUS_LED, 1);
-
-                if (memcmp(buffer, "mf", 2) == 0)
+                if (index == 0)
                 {
-                    memfill = true;
-                }
-                else if (memfill == true)
-                {
-                    if (index == 1)
-                    {
-                        fill_mem(buffer[0]);
-                    }
-                    memfill = false;
-                }
-                else if (memcmp(buffer, "ff", 2) == 0)
-                {
-                    fill_mem(0xFF);
-                    uart_write_bytes(UART_NUM, "ME OK\r\n", 7); // Memory erase OK
-                }
-                else if (memcmp(buffer, "mp", 2) == 0)
-                {
-                    read_mem();
-                }
-                else if (memcmp(buffer, "dp", 2) == 0)
-                {
-                    detect_devices();
+                    // do nothing
                 }
                 else if (memcmp(buffer, "vv", 2) == 0)
                 {
                     sprintf(ans, "V: %s D: %s\r\n", SOFTWARE_VERSION, SOFTWARE_DATE);
                     uart_write_bytes(UART_NUM, ans, strlen(ans)); // print version and date
                 }
+                else if (memcmp(buffer, "p1", 2) == 0)
+                {
+                    led_set_power_on();
+                    gpio_set_level(POWER_MOSFET, 0);
+                    vTaskDelay(100 / portTICK_PERIOD_MS);
+                    sprintf(ans, "P: ON\r\n");
+                    uart_write_bytes(UART_NUM, ans, strlen(ans)); // print version and date
+                    board_on = true;
+                }
+                else if (memcmp(buffer, "p0", 2) == 0)
+                {
+                    led_set_safe_to_remove();
+                    gpio_set_level(POWER_MOSFET, 1);
+                    vTaskDelay(100 / portTICK_PERIOD_MS);
+                    sprintf(ans, "P: OFF\r\n");
+                    uart_write_bytes(UART_NUM, ans, strlen(ans)); // print version and date
+                    board_on = false;
+                }
                 else
                 {
-                    // CR received, process the received data
-                    buffer[index] = '\0';            // Null-terminate the string
-                    memcpy(aux1, buffer, index + 1); // clone the buffer to compare later
-
-                    if (index >= MIN_TEXT_LENGTH)
+                    if (board_on)
                     {
-                        esp_err_t read_result = eeprom_read(EEPROM_ADDR, EEPROM_START_ADDR, (uint8_t *)aux0, index + 1);
-                        if (read_result == ESP_OK)
+                        led_set_in_progress();
+                        if (memcmp(buffer, "mf", 2) == 0)
                         {
-                            memset(empty, 0xFF, index);
-                            empty[index] = '\0';
-                            if (memcmp(empty, aux0, index) == 0)
+                            memfill = true;
+                        }
+                        else if (memfill == true)
+                        {
+                            if (index == 1)
                             {
-                                // if (memcmp(empty, aux0, index) != 0)
-                                // {
-                                //     aux0[index] = '\0';             // terminate aux0 no matter what just in case i am writing a string smaller than the one recorded
-                                //     sprintf(ans, "E3: %s\n", aux0); // E3: memory not empty
-                                //     uart_write_bytes(UART_NUM, ans, strlen(ans));
-                                //     // for (uint16_t i = 0; i < index; i++) {
-                                //     //     sprintf(ans, "%.4d: %.2x\n", i, aux0[i]);
-                                //     //     uart_write_bytes(UART_NUM, ans, strlen(ans));
-                                //     // }
-                                // }
+                                fill_mem(buffer[0]);
+                            }
+                            memfill = false;
+                        }
+                        else if (memcmp(buffer, "ff", 2) == 0)
+                        {
+                            fill_mem(0xFF);
+                            uart_write_bytes(UART_NUM, "ME OK\r\n", 7); // Memory erase OK
+                        }
+                        else if (memcmp(buffer, "mp", 2) == 0)
+                        {
+                            read_mem();
+                        }
+                        else if (memcmp(buffer, "dp", 2) == 0)
+                        {
+                            detect_devices();
+                        }
+                        else
+                        {
+                            // CR received, process the received data
+                            buffer[index] = '\0';            // Null-terminate the string
+                            memcpy(aux1, buffer, index + 1); // clone the buffer to compare later
 
-                                esp_err_t write_result = eeprom_write(EEPROM_ADDR, EEPROM_START_ADDR, (uint8_t *)buffer, index + 1);
-                                if (write_result == ESP_OK)
+                            reset_target();
+                            gpio_set_level(STATUS_LED, 1);
+                            vTaskDelay(250 / portTICK_PERIOD_MS);
+
+                            if (index >= MIN_TEXT_LENGTH)
+                            {
+                                esp_err_t read_result = eeprom_read(EEPROM_ADDR, EEPROM_START_ADDR, (uint8_t *)aux0, index + 1);
+                                if (read_result == ESP_OK)
                                 {
-                                    vTaskDelay(100 / portTICK_PERIOD_MS);
-                                    esp_err_t second_read_result = eeprom_read(EEPROM_ADDR, EEPROM_START_ADDR, (uint8_t *)aux2, index + 1);
-                                    // aux2[index] = '\0';
-                                    if (second_read_result == ESP_OK)
+                                    memset(empty, 0xFF, index);
+                                    empty[index] = '\0';
+                                    if (memcmp(empty, aux0, index) == 0)
                                     {
-                                        if (strcmp(aux2, aux1) == 0)
+                                        esp_err_t write_result = eeprom_write(EEPROM_ADDR, EEPROM_START_ADDR, (uint8_t *)buffer, index + 1);
+                                        if (write_result == ESP_OK)
                                         {
-                                            sprintf(ans, "OK: %s\r\n", aux2); // OK
-                                            uart_write_bytes(UART_NUM, ans, strlen(ans));
+                                            vTaskDelay(100 / portTICK_PERIOD_MS);
+                                            esp_err_t second_read_result = eeprom_read(EEPROM_ADDR, EEPROM_START_ADDR, (uint8_t *)aux2, index + 1);
+                                            // aux2[index] = '\0';
+                                            if (second_read_result == ESP_OK)
+                                            {
+                                                if (strcmp(aux2, aux1) == 0)
+                                                {
+                                                    sprintf(ans, "OK: %s\r\n", aux2); // OK
+                                                    uart_write_bytes(UART_NUM, ans, strlen(ans));
+                                                }
+                                                else
+                                                {
+                                                    sprintf(ans, "E6: %s\r\n", aux2); // E6: written / read values do not match
+                                                    uart_write_bytes(UART_NUM, ans, strlen(ans));
+                                                }
+                                            }
+                                            else
+                                            {
+                                                sprintf(ans, "E5: %02d - %s\r\n", second_read_result, aux2); // E5: re-read memory error
+                                                uart_write_bytes(UART_NUM, ans, strlen(ans));
+                                            }
                                         }
                                         else
                                         {
-                                            sprintf(ans, "E6: %s\r\n", aux2); // E6: written / read values do not match
+                                            sprintf(ans, "E4: %02d\r\n", write_result); // E4: write memory error
                                             uart_write_bytes(UART_NUM, ans, strlen(ans));
                                         }
                                     }
                                     else
                                     {
-                                        sprintf(ans, "E5: %02d - %s\r\n", second_read_result, aux2); // E5: re-read memory error
+                                        aux0[index] = '\0';               // terminate aux0 no matter what just in case i am writing a string smaller than the one recorded
+                                        sprintf(ans, "E3: %s\r\n", aux0); // E3: memory not empty
                                         uart_write_bytes(UART_NUM, ans, strlen(ans));
                                     }
                                 }
                                 else
                                 {
-                                    sprintf(ans, "E4: %02d\r\n", write_result); // E4: write memory error
+                                    sprintf(ans, "E2: %02d\r\n", read_result); // E2: read memory error
                                     uart_write_bytes(UART_NUM, ans, strlen(ans));
                                 }
                             }
                             else
                             {
-                                aux0[index] = '\0';             // terminate aux0 no matter what just in case i am writing a string smaller than the one recorded
-                                sprintf(ans, "E3: %s\r\n", aux0); // E3: memory not empty
+                                sprintf(ans, "E1: %s\r\n", buffer); // E1: buffer too short
                                 uart_write_bytes(UART_NUM, ans, strlen(ans));
                             }
+
+                            vTaskDelay(250 / portTICK_PERIOD_MS);
+                            release_target();
+                            gpio_set_level(STATUS_LED, 0);
                         }
-                        else
-                        {
-                            sprintf(ans, "E2: %02d\r\n", read_result); // E2: read memory error
-                            uart_write_bytes(UART_NUM, ans, strlen(ans));
-                        }
+                        led_set_power_on();
                     }
                     else
                     {
-                        sprintf(ans, "E1: %s\r\n", buffer); // E1: buffer too short
+                        sprintf(ans, "E7\r\n"); // E7: board is off
                         uart_write_bytes(UART_NUM, ans, strlen(ans));
                     }
                 }
                 // Reset buffer index
                 index = 0;
-
-                vTaskDelay(250 / portTICK_PERIOD_MS);
-                gpio_set_level(MAIN_PROCESSOR_RESET_PIN, 0);
-                gpio_set_level(STATUS_LED, 0);
             }
             else
             {
@@ -344,7 +422,7 @@ void uart_task(void *pvParameters)
                 }
                 else
                 {
-                    sprintf(ans, "E0: %s\n", buffer); // E0: buffer overflow
+                    sprintf(ans, "E0: %s\r\n", buffer); // E0: buffer overflow
                     uart_write_bytes(UART_NUM, ans, strlen(ans));
                     index = 0;
                 }
@@ -353,17 +431,81 @@ void uart_task(void *pvParameters)
     }
 }
 
+void led_task(void *pvParameters)
+{
+    gpio_set_direction(STATUS_LED, GPIO_MODE_OUTPUT);
+    gpio_set_direction(LED_RED, GPIO_MODE_OUTPUT);
+    gpio_set_direction(LED_GREEN, GPIO_MODE_OUTPUT);
+    gpio_set_direction(LED_BLUE, GPIO_MODE_OUTPUT);
+    gpio_set_level(STATUS_LED, 0);
+    gpio_set_level(LED_RED, 0);
+    gpio_set_level(LED_GREEN, 0);
+    gpio_set_level(LED_BLUE, 0);
+
+    while (1)
+    {
+        if (color & COLOR_RED)
+            gpio_set_level(LED_RED, 1);
+        else
+            gpio_set_level(LED_RED, 0);
+        if (color & COLOR_GREEN)
+            gpio_set_level(LED_GREEN, 1);
+        else
+            gpio_set_level(LED_GREEN, 0);
+        if (color & COLOR_BLUE)
+            gpio_set_level(LED_BLUE, 1);
+        else
+            gpio_set_level(LED_BLUE, 0);
+        if (blink)
+        {
+            vTaskDelay((blink_slow ? BLINK_SLOW : BLINK_FAST) / portTICK_PERIOD_MS);
+            gpio_set_level(LED_RED, 0);
+            gpio_set_level(LED_GREEN, 0);
+            gpio_set_level(LED_BLUE, 0);
+            vTaskDelay((blink_slow ? BLINK_SLOW : BLINK_FAST) / portTICK_PERIOD_MS);
+        }
+        else
+        {
+            vTaskDelay(10 / portTICK_PERIOD_MS);
+        }
+    }
+}
+
+void led_set_power_on(void)
+{
+    color = COLOR_RED;
+    blink = false;
+}
+void led_set_safe_to_remove(void)
+{
+    color = COLOR_GREEN;
+    blink = false;
+}
+void led_set_in_progress(void)
+{
+    color = COLOR_YELLOW;
+    blink = true;
+}
+void led_set_off(void)
+{
+    color = 0;
+    blink = false;
+}
+
 void app_main()
 {
     init_uart();
     init_i2c();
 
-    gpio_set_direction(MAIN_PROCESSOR_RESET_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_direction(STATUS_LED, GPIO_MODE_OUTPUT);
-    gpio_set_level(MAIN_PROCESSOR_RESET_PIN, 0);
-    gpio_set_level(STATUS_LED, 0);
+    gpio_set_direction(POWER_MOSFET, GPIO_MODE_OUTPUT);
+    gpio_set_pull_mode(POWER_MOSFET, GPIO_PULLUP_ONLY);
+    gpio_set_level(POWER_MOSFET, 1);
 
-    xTaskCreate(uart_task, "uart_task", 20480, NULL, 10, NULL);
+    release_target();
+    led_set_safe_to_remove();
+
+    xTaskCreate(led_task, "led_task", 4096, NULL, 2, NULL);
+    xTaskCreate(uart_task, "uart_task", 20480, NULL, 1, NULL);
 }
 
 // test pattern
